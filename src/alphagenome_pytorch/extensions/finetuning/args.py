@@ -47,6 +47,7 @@ DEFAULTS = {
     "augment_shift_bp": 0,
     "positional_weight": 5.0,
     "count_weight": 1.0,
+    "loss_type": "multinomial",
     "num_workers": 4,
     "max_grad_norm": 1.0,
     "num_segments": 8,
@@ -419,6 +420,10 @@ def add_finetune_arguments(parser: argparse.ArgumentParser) -> None:
                             "all track types. 0 disables. Val/test are never shifted.")
     train.add_argument("--positional-weight", type=float, default=DEFAULTS["positional_weight"])
     train.add_argument("--count-weight", type=float, default=DEFAULTS["count_weight"])
+    train.add_argument("--loss-type", choices=["multinomial", "poisson"],
+                       default=DEFAULTS["loss_type"],
+                       help="multinomial = AG profile+count split (default); "
+                            "poisson = plain per-bin Poisson NLL (Enformer-style, no split)")
     train.add_argument("--max-grad-norm", type=float, default=DEFAULTS["max_grad_norm"])
     train.add_argument("--num-segments", type=int, default=DEFAULTS["num_segments"])
     train.add_argument("--min-segment-size", type=int, default=DEFAULTS["min_segment_size"])
@@ -620,6 +625,7 @@ def postprocess_args(
         "augment_shift_bp",
         "positional_weight",
         "count_weight",
+        "loss_type",
         "max_grad_norm",
         "num_segments",
         "min_segment_size",

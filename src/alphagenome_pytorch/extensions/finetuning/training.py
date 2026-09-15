@@ -24,7 +24,43 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from alphagenome_pytorch import losses
-from alphagenome_pytorch.losses import multinomial_loss
+from alphagenome_pytorch.losses import multinomial_loss, poisson_loss
+
+
+def _res_loss_dict(
+    loss_type: str,
+    *,
+    y_pred,
+    y_true,
+    mask,
+    multinomial_resolution: int,
+    positional_weight: float,
+    count_weight: float,
+):
+    """Per-resolution loss, dispatched by ``loss_type``.
+
+    - ``"multinomial"`` (default): AlphaGenome's Poisson-multinomial loss, which
+      splits into a positional (profile) term and a count (Poisson-on-totals) term.
+    - ``"poisson"``: a plain per-bin Poisson NLL over the coverage (Enformer-style),
+      with NO profile/count decomposition. ``positional_weight``/``count_weight`` are
+      ignored (they describe a split that does not exist here).
+
+    Returns the same dict shape as ``multinomial_loss`` so logging keys still populate;
+    in poisson mode ``loss_total`` holds the Poisson NLL and ``loss_positional`` is 0.
+    """
+    if loss_type == "poisson":
+        l = poisson_loss(y_true=torch.clamp(y_true, min=0), y_pred=y_pred, mask=mask)
+        z = torch.zeros((), device=l.device, dtype=l.dtype)
+        return {"loss": l, "loss_total": l, "loss_positional": z}
+    return multinomial_loss(
+        y_pred=y_pred,
+        y_true=y_true,
+        mask=mask,
+        multinomial_resolution=multinomial_resolution,
+        positional_weight=positional_weight,
+        count_weight=count_weight,
+        channels_last=True,
+    )
 # Re-exported so existing `from ...training import ModalityConfig, MODALITY_CONFIGS`
 # imports keep working; the definitions now live in the dependency-light
 # `modalities` module the flag layer reads.
@@ -1325,6 +1361,7 @@ def train_epoch_multihead(
     profile_batches: int = 0,
     log_fn: Any | None = None,
     encoder_only: bool = False,
+    loss_type: str = "multinomial",
     *,
     gene_loss_weights: dict[str, float] | None = None,
     gene_cross_track_weight: float = 5.0,
@@ -1508,14 +1545,14 @@ def train_epoch_multihead(
                     current_seq_len, num_segments, min_segment_size
                 )
 
-                loss_dict = multinomial_loss(
+                loss_dict = _res_loss_dict(
+                    loss_type,
                     y_pred=pred,
                     y_true=targets,
                     mask=mask,
                     multinomial_resolution=multinomial_res,
                     positional_weight=positional_weight,
                     count_weight=count_weight,
-                    channels_last=True,
                 )
 
                 res_loss = loss_dict["loss"] * weight
@@ -1680,6 +1717,7 @@ def validate_multihead(
     world_size: int = 1,
     encoder_only: bool = False,
     organism: int = 0,
+    loss_type: str = "multinomial",
     gene_annotation: Any = None,
     gene_expr_track_strands: list[str] | None = None,
     gene_expr_modality: str = "rna_seq",
@@ -1847,14 +1885,14 @@ def validate_multihead(
                         current_seq_len, num_segments, min_segment_size
                     )
 
-                    loss_dict = multinomial_loss(
+                    loss_dict = _res_loss_dict(
+                        loss_type,
                         y_pred=pred_scaled,
                         y_true=targets_scaled,
                         mask=mask,
                         multinomial_resolution=multinomial_res,
                         positional_weight=positional_weight,
                         count_weight=count_weight,
-                        channels_last=True,
                     )
 
                     res_loss = loss_dict["loss"] * weight
