@@ -86,6 +86,11 @@ def load_targets(path: str) -> pd.DataFrame:
 
 
 def manual_untransform(predictions: np.ndarray, targets: pd.DataFrame) -> np.ndarray:
+    """Invert hound_data_read's default (non-transform_old) target transform.
+
+    Forward: scale per bp -> sum pool -> sqrt(1 + s) - 1 ->
+    soft clip cs - 1 + sqrt(z - cs + 1). Hard clips are not invertible.
+    """
     output = predictions.astype(np.float64)
     for track_index, (_, target) in enumerate(targets.iterrows()):
         values = output[..., track_index]
@@ -93,11 +98,11 @@ def manual_untransform(predictions: np.ndarray, targets: pd.DataFrame) -> np.nda
             clip_soft = float(target["clip_soft"])
             values = np.where(
                 values > clip_soft,
-                clip_soft + np.square(values - clip_soft),
+                clip_soft - 1.0 + np.square(values - clip_soft + 1.0),
                 values,
             )
         if "_sqrt" in str(target.get("sum_stat", "")):
-            values = np.power(values + 1.0, 4.0 / 3.0) - 1.0
+            values = np.square(values + 1.0) - 1.0
         values /= float(target.get("scale", 1.0))
         output[..., track_index] = values
     return np.maximum(output, 0).astype(np.float32)
@@ -243,15 +248,19 @@ class PearsonState:
 
 
 def accumulated_pearson(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Direct NumPy port of AlphaGenome's accumulated Pearson metric."""
+    """NumPy port of AlphaGenome's accumulated Pearson metric.
+
+    Sums are accumulated in float64: at 1 bp there are ~1e9 values per track,
+    and float32 sums cancel catastrophically (negative variance -> NaN).
+    """
     axis = (-2, -3)
     state = PearsonState(
-        np.sum(x * y, axis=axis, dtype=np.float32),
-        np.sum(x, axis=axis, dtype=np.float32),
-        np.sum(np.square(x), axis=axis, dtype=np.float32),
-        np.sum(y, axis=axis, dtype=np.float32),
-        np.sum(np.square(y), axis=axis, dtype=np.float32),
-        np.sum(np.ones_like(x), axis=axis, dtype=np.float32),
+        np.sum(x * y, axis=axis, dtype=np.float64),
+        np.sum(x, axis=axis, dtype=np.float64),
+        np.sum(np.square(x), axis=axis, dtype=np.float64),
+        np.sum(y, axis=axis, dtype=np.float64),
+        np.sum(np.square(y), axis=axis, dtype=np.float64),
+        np.full(x.shape[-1], x.shape[0] * x.shape[1], dtype=np.float64),
     )
     with np.errstate(invalid="ignore", divide="ignore"):
         x_mean = state.x_sum / state.count
